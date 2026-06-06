@@ -1,0 +1,6 @@
+{
+  "name": "FullStack Hub",
+  "description": "A high-performance full-stack mini social network and video hosting platform for developers, built with modern UI and SQLite.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
