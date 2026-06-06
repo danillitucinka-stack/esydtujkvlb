@@ -14,4 +14,11 @@ export interface Video {
   uploaded_at: string;
   user_id: number | null;
   author_name: string | null;
+
+  // YouTube / Twitch additions
+  type?: "youtube" | "twitch" | "local";
+  views?: number;
+  game_name?: string;
+  channel_name?: string;
+  embed_url?: string;
 }

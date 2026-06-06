@@ -67,7 +67,7 @@ export default function App() {
   const fetchVideos = async () => {
     setLoadingVideos(true);
     try {
-      const response = await fetch("/api/videos");
+      const response = await fetch("/api/hub/feed");
       if (response.ok) {
         const data = await response.json();
         setVideos(data);
@@ -339,6 +339,9 @@ export default function App() {
 
     // 3. Category Chip Filter
     if (activeCategory === "Все") return true;
+    if (vid.category) {
+      return vid.category === activeCategory;
+    }
     if (activeCategory === "Разработка") {
       return (
         titleText.includes("разраб") ||
@@ -375,7 +378,7 @@ export default function App() {
       );
     }
 
-    return true;
+    return false;
   });
 
   return (
@@ -758,10 +761,29 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Pill Badge overlays */}
+                      {video.type === "twitch" ? (
+                        <span className="absolute top-2 left-2 bg-red-650 text-white font-extrabold text-[9px] uppercase font-mono px-2 py-0.5 rounded flex items-center gap-1 shadow-lg shadow-black/50 animate-pulse">
+                          <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
+                          LIVE • Twitch
+                        </span>
+                      ) : video.type === "youtube" ? (
+                        <span className="absolute top-2 left-2 bg-[#0c0c0f]/95 border border-zinc-700 text-white font-bold text-[9px] uppercase font-mono px-2 py-0.5 rounded flex items-center gap-1 shadow-lg shadow-black/50">
+                          <span className="w-1.5 h-1.5 bg-red-650 rounded-full"></span>
+                          YouTube • Видео
+                        </span>
+                      ) : (
+                        <span className="absolute top-2 left-2 bg-indigo-600/90 border border-indigo-500/20 text-white font-medium text-[9px] uppercase font-mono px-2 py-0.5 rounded flex items-center gap-1 shadow-lg shadow-black/50">
+                          FullStack Hub • Вебинар
+                        </span>
+                      )}
+
                       {/* Video Simulated Duration Label */}
-                      <span className="absolute bottom-1.5 right-1.5 bg-black/85 text-[11px] font-bold font-mono px-1.5 py-0.5 rounded text-white tracking-tight">
-                        {getSimulatedDurationText(video.id)}
-                      </span>
+                      {video.type !== "twitch" && (
+                        <span className="absolute bottom-1.5 right-1.5 bg-black/85 text-[11px] font-bold font-mono px-1.5 py-0.5 rounded text-white tracking-tight">
+                          {getSimulatedDurationText(video.id)}
+                        </span>
+                      )}
                     </div>
 
                     {/* CARD INFO CONTENT ROW (AVATAR, TITLE, STATS) */}
@@ -785,9 +807,19 @@ export default function App() {
                         </p>
                         
                         <div className="text-[12px] text-zinc-400 flex items-center flex-wrap gap-1 mt-0.5 font-sans">
-                          <span>{getSimulatedViews(video.id)} просмотров</span>
-                          <span>•</span>
-                          <span>{getSimulatedDaysAgo(video.id, video.uploaded_at)}</span>
+                          {video.type === "twitch" ? (
+                            <>
+                              <span className="text-red-500 font-bold">{video.views ? video.views.toLocaleString() : getSimulatedViews(video.id)}</span>
+                              <span>зрителей</span>
+                              <span>• сейчас в эфире</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>{video.views ? video.views.toLocaleString() : getSimulatedViews(video.id)} просмотров</span>
+                              <span>•</span>
+                              <span>{getSimulatedDaysAgo(video.id, video.uploaded_at)}</span>
+                            </>
+                          )}
                         </div>
                       </div>
 
@@ -1188,15 +1220,36 @@ export default function App() {
                 {/* 1. Main player column left */}
                 <div className="flex-1 flex flex-col p-4 md:p-6 lg:border-r lg:border-[#212121] justify-start min-w-0">
                   
-                  {/* HTML5 Video Screen box */}
+                  {/* HTML5 / Embedded Video Screen box */}
                   <div className="aspect-video w-full rounded-2xl bg-black border border-[#232328] relative overflow-hidden shadow-2xl">
-                    <video
-                      src={getVideoUrl(selectedVideo)}
-                      poster={getThumbnailUrl(selectedVideo)}
-                      controls
-                      autoPlay
-                      className="w-full h-full object-contain"
-                    />
+                    {selectedVideo.type === "youtube" ? (
+                      <iframe
+                        src={`${selectedVideo.embed_url}?autoplay=1&mute=0`}
+                        title={selectedVideo.title}
+                        frameBorder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowFullScreen
+                        className="w-full h-full object-contain"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : selectedVideo.type === "twitch" ? (
+                      <iframe
+                        src={`https://player.twitch.tv/?channel=${selectedVideo.channel_name}&parent=${window.location.hostname || "localhost"}&autoplay=true&muted=false`}
+                        title={selectedVideo.title}
+                        frameBorder="0"
+                        allowFullScreen
+                        scrolling="no"
+                        className="w-full h-full object-contain"
+                      />
+                    ) : (
+                      <video
+                        src={getVideoUrl(selectedVideo)}
+                        poster={getThumbnailUrl(selectedVideo)}
+                        controls
+                        autoPlay
+                        className="w-full h-full object-contain"
+                      />
+                    )}
                   </div>
 
                   {/* Video Metadata display list */}
@@ -1212,7 +1265,14 @@ export default function App() {
                       
                       {/* Views / Date */}
                       <p className="text-xs text-zinc-400">
-                        {getSimulatedViews(selectedVideo.id)} просмотров • {getSimulatedDaysAgo(selectedVideo.id, selectedVideo.uploaded_at)}
+                        {selectedVideo.type === "twitch" ? (
+                          <span className="flex items-center gap-1.5 text-red-500 font-bold">
+                            <span className="inline-block w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
+                            {(selectedVideo.views || 2500).toLocaleString()} зрителей в эфире Twitch
+                          </span>
+                        ) : (
+                          <>{(selectedVideo.views || getSimulatedViews(selectedVideo.id)).toLocaleString()} просмотров • {getSimulatedDaysAgo(selectedVideo.id, selectedVideo.uploaded_at)}</>
+                        )}
                       </p>
 
                       {/* User interaction counts (Likes, share, etc) */}

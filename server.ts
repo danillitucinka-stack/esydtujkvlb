@@ -346,6 +346,255 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// --- YOUTUBE & TWITCH DATA SEEDS & CONTROLLER ---
+const YOUTUBE_BACKUP_VIDEOS = [
+  {
+    title: "React in 100 Seconds",
+    original_id: "gU8Z48Xz2qM",
+    description: "Learn the basics of React in just 100 seconds! Perfect for developers starting with React 18 and modern component building.",
+    author_name: "Fireship",
+    uploaded_at: "2026-05-10T12:00:00Z",
+    views: 450230,
+    category: "Разработка"
+  },
+  {
+    title: "TypeScript in 100 Seconds",
+    original_id: "zQnOBzgSZ9Y",
+    description: "Learn why TypeScript is the standard wrapper for modern JS apps in 100 seconds.",
+    author_name: "Fireship",
+    uploaded_at: "2026-05-12T15:30:00Z",
+    views: 312100,
+    category: "Разработка"
+  },
+  {
+    title: "SQL in 100 Seconds",
+    original_id: "byovUP6FqW8",
+    description: "Databases are hard. Learn Structured Query Language (SQL) in 100 seconds so you can build robust backends.",
+    author_name: "Fireship",
+    uploaded_at: "2026-05-15T09:00:00Z",
+    views: 289450,
+    category: "Базы данных"
+  },
+  {
+    title: "PostgreSQL Explained in 100 Seconds",
+    original_id: "n2Fluyr3lsc",
+    description: "Postgres is the world's most advanced open-source relational database. Let's explain its features in 100s.",
+    author_name: "Fireship",
+    uploaded_at: "2026-05-20T10:15:00Z",
+    views: 198300,
+    category: "Базы данных"
+  },
+  {
+    title: "Vite: The Modern Web Bundler Explained",
+    original_id: "KCrXgy8o_Xo",
+    description: "Vite is an incredibly fast development server and bundler. Learn how Vite handles code loading dynamically.",
+    author_name: "Fireship",
+    uploaded_at: "2026-05-22T14:00:00Z",
+    views: 154000,
+    category: "Разработка"
+  },
+  {
+    title: "Docker in 100 Seconds",
+    original_id: "gAkwW2tuIqE",
+    description: "Containers make production deployment predictable. Learn Docker in 100 seconds.",
+    author_name: "Fireship",
+    uploaded_at: "2026-05-25T11:45:00Z",
+    views: 389200,
+    category: "Лайфхаки"
+  },
+  {
+    title: "Next.js 14 Complete Guide",
+    original_id: "wm5gMKuwSYk",
+    description: "Everything you need to know about Next.js 14, routing, Server Actions, and partial pre-rendering.",
+    author_name: "Vercel",
+    uploaded_at: "2026-06-01T08:00:00Z",
+    views: 89600,
+    category: "Разработка"
+  },
+  {
+    title: "Learn SQL Queries for Beginners with PG Admin",
+    original_id: "H0wn31_S-S0",
+    description: "Detailed hands-on tutorial on PostgreSQL databases and standard SELECT, JOIN, and INSERT statements.",
+    author_name: "freeCodeCamp.org",
+    uploaded_at: "2026-05-28T16:00:00Z",
+    views: 672400,
+    category: "Базы данных"
+  }
+];
+
+const TWITCH_CHANNELS = [
+  { channel_name: "shroud", author_name: "Shroud", title: "Ranked Valorant Grind with Squad | Drops on!", game_name: "Valorant" },
+  { channel_name: "gaules", author_name: "Gaules", title: "CS2 Counter-Strike 2 Major Arena Live Tournament", game_name: "Counter-Strike 2" },
+  { channel_name: "xqc", author_name: "xQc", title: "Reacting to crazy developer desk structures, then dev chat", game_name: "Just Chatting" },
+  { channel_name: "tarik", author_name: "tarik", title: "VCT Masters Co-Stream LIVE - T1 vs Sentinels", game_name: "Valorant" },
+  { channel_name: "clix", author_name: "Clix", title: "FNCS Grand Finals Practice with Duo | Fortnite live!", game_name: "Fortnite" },
+  { channel_name: "auronplay", author_name: "AuronPlay", title: "Minecraft Survival - Building the ultimate automation farm!", game_name: "Minecraft" },
+  { channel_name: "ibai", author_name: "Ibai", title: "Watching absolute best developer fails with chat", game_name: "Just Chatting" },
+  { channel_name: "ninja", author_name: "Ninja", title: "Duo arena games with clix - road to unreal", game_name: "Fortnite" },
+  { channel_name: "lck", author_name: "LCK", title: "LCK Summer Split Live coverage: T1 vs GenG", game_name: "League of Legends" },
+  { channel_name: "freecodecamp", author_name: "freeCodeCamp Live", title: "Live Code-Along: Building a responsive SaaS with React & Tailwind CSS", game_name: "Software & Game Development" }
+];
+
+// Asynchronously parse YouTube RSS XML
+async function fetchYouTubeFeed(channelId: string): Promise<any[]> {
+  try {
+    const url = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout so the feed is fast
+    
+    const res = await globalThis.fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    
+    if (!res.ok) throw new Error(`Status ${res.status}`);
+    const xml = await res.text();
+    
+    const entries: any[] = [];
+    const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
+    let match;
+    
+    while ((match = entryRegex.exec(xml)) !== null) {
+      const content = match[1];
+      const videoIdMatch = content.match(/<yt:videoId>(.*?)<\/yt:videoId>/);
+      const titleMatch = content.match(/<title>(.*?)<\/title>/);
+      const authorMatch = content.match(/<name>(.*?)<\/name>/);
+      
+      if (videoIdMatch && titleMatch) {
+         const videoId = videoIdMatch[1].trim();
+         const title = titleMatch[1].trim();
+         const authorName = authorMatch ? authorMatch[1].trim() : "YouTube";
+         
+         // Random category matching from title
+         let category = "Разработка";
+         const normalizedTitle = title.toLowerCase();
+         if (normalizedTitle.includes("sql") || normalizedTitle.includes("db") || normalizedTitle.includes("postgres") || normalizedTitle.includes("database")) {
+           category = "Базы данных";
+         } else if (normalizedTitle.includes("music") || normalizedTitle.includes("sound") || normalizedTitle.includes("муз") || normalizedTitle.includes("ambient")) {
+           category = "Музыка & Саунд";
+         } else if (normalizedTitle.includes("tips") || normalizedTitle.includes("lifehack") || normalizedTitle.includes("совет") || normalizedTitle.includes("hack")) {
+           category = "Лайфхаки";
+         }
+
+         entries.push({
+           id: Math.floor(Math.random() * 9000000) + 100000,
+           title,
+           description: `Смотрите свежее видео напрямую с официального канала YouTube автора ${authorName}.`,
+           video_url: `https://www.youtube.com/watch?v=${videoId}`,
+           thumbnail_url: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+           uploaded_at: new Date().toISOString(),
+           user_id: null,
+           author_name: authorName,
+           type: "youtube",
+           views: Math.floor(Math.random() * 85000) + 1200,
+           embed_url: `https://www.youtube.com/embed/${videoId}`,
+           category
+         });
+      }
+    }
+    return entries;
+  } catch (error) {
+    // Fail silently, backups will cover
+    return [];
+  }
+}
+
+// Fisher-Yates Perfect Shuffle
+function shuffleArray(array: any[]) {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// Unified Hub Feed Mixer Endpoint
+app.get("/api/hub/feed", async (req, res) => {
+  try {
+    // 1. Load users' own uploads from local DB
+    const dbVideos = await queryAll(`
+      SELECT videos.*, users.username as author_name 
+      FROM videos 
+      LEFT JOIN users ON videos.user_id = users.id 
+      ORDER BY videos.uploaded_at DESC
+    `);
+    
+    const localVideos = dbVideos.map(v => ({
+      ...v,
+      type: "local" as const
+    }));
+
+    // 2. Fetch/Combine YouTube channel RSS feeds
+    const channelIds = [
+      "UCsBjURrdUwYMygX69QXYg7A", // Fireship
+      "UC7W_67fO9Gqdb87G01W_NHA"  // Vercel
+    ];
+    
+    let ytFeeds: any[] = [];
+    try {
+      const parsedFeeds = await Promise.all(channelIds.map(id => fetchYouTubeFeed(id)));
+      ytFeeds = parsedFeeds.flat();
+    } catch (e) {
+      console.warn("YouTube feeds loading issue:", e);
+    }
+
+    // If dynamic feeds returned nothing, create high performance mock items from backup
+    if (ytFeeds.length === 0) {
+      ytFeeds = YOUTUBE_BACKUP_VIDEOS.map((vid, key) => ({
+        id: 1100000 + key,
+        title: vid.title,
+        description: vid.description,
+        video_url: `https://www.youtube.com/watch?v=${vid.original_id}`,
+        thumbnail_url: `https://i.ytimg.com/vi/${vid.original_id}/maxresdefault.jpg`,
+        uploaded_at: vid.uploaded_at,
+        user_id: null,
+        author_name: vid.author_name,
+        type: "youtube" as const,
+        views: vid.views,
+        embed_url: `https://www.youtube.com/embed/${vid.original_id}`,
+        category: vid.category
+      }));
+    }
+
+    // 3. Compile Twitch Live streams
+    const twitchStreams = TWITCH_CHANNELS.map((stream, idx) => {
+      const viewCount = Math.floor(Math.random() * 48000) + 1200;
+      
+      // Select appropriate categories matching active tags
+      let category = "Все";
+      if (stream.channel_name === "freecodecamp") {
+        category = "Разработка";
+      } else if (idx % 3 === 0) {
+        category = "Лайфхаки";
+      }
+
+      return {
+        id: 2200000 + idx,
+        title: stream.title,
+        description: `Активный прямой эфир на Twitch от легендарного стримера ${stream.author_name} по игре или категории ${stream.game_name}. Присоединяйтесь к просмотру!`,
+        video_url: `https://twitch.tv/${stream.channel_name}`,
+        thumbnail_url: `https://static-cdn.jtvnw.net/previews-ttv/live_user_${stream.channel_name}-640x360.jpg`,
+        uploaded_at: new Date().toISOString(),
+        user_id: null,
+        author_name: stream.author_name,
+        type: "twitch" as const,
+        views: viewCount,
+        game_name: stream.game_name,
+        channel_name: stream.channel_name,
+        category
+      };
+    });
+
+    // 4. Combine! Keep local uploads prominent, then shuffle YouTube and Twitch
+    const mixedYoutubeAndTwitch = shuffleArray([...ytFeeds, ...twitchStreams]);
+    const finalFeed = [...localVideos, ...mixedYoutubeAndTwitch];
+
+    return res.json(finalFeed);
+  } catch (err: any) {
+    console.error("Hub Feed mixer error:", err);
+    return res.status(550).json({ error: "Не удалось сформировать общую ленту контента." });
+  }
+});
+
 // Fetch active videos query endpoint
 app.get("/api/videos", async (req, res) => {
   try {
