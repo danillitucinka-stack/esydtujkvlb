@@ -247,6 +247,11 @@ async function queryGet(sql: string, params: any[] = []): Promise<any> {
       return user || null;
     }
 
+    if (cleanSql.includes("FROM users WHERE id = ?")) {
+      const user = db.users.find(u => u.id === parseInt(String(params[0]), 10));
+      return user || null;
+    }
+
     if (cleanSql.includes("FROM likes")) {
       if (cleanSql.includes("user_id = ? AND video_id = ?")) {
         return db.likes.find(l => l.user_id === params[0] && String(l.video_id) === String(params[1])) || null;

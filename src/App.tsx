@@ -88,10 +88,17 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (selectedVideo) {
+    if (selectedVideo?.id) {
       fetchActiveVideoLikesAndComments(selectedVideo.id);
+
+      // Real-time polling: fetch comments and likes every 5 seconds
+      const pollInterval = setInterval(() => {
+        fetchActiveVideoLikesAndComments(selectedVideo.id);
+      }, 5000);
+
+      return () => clearInterval(pollInterval);
     }
-  }, [selectedVideo, currentUser]);
+  }, [selectedVideo?.id, currentUser?.id]);
 
   const handleToggleLike = async () => {
     if (!selectedVideo) return;
@@ -188,6 +195,22 @@ export default function App() {
 
   useEffect(() => {
     fetchVideos();
+
+    // Background polling: fetch main video feed update quietly every 15 seconds
+    const feedInterval = setInterval(() => {
+      fetch("/api/hub/feed")
+        .then(res => {
+          if (res.ok) return res.json();
+        })
+        .then(data => {
+          if (data && Array.isArray(data)) {
+            setVideos(data);
+          }
+        })
+        .catch(err => console.warn("Quiet background feed refresh failed:", err));
+    }, 15000);
+
+    return () => clearInterval(feedInterval);
   }, []);
 
   // Handle Authentication API
