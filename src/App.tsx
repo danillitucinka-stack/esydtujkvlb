@@ -43,6 +43,111 @@ export default function App() {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
 
+  // Active Video Likes and Comments States
+  const [likesCount, setLikesCount] = useState<number>(0);
+  const [userLiked, setUserLiked] = useState<boolean>(false);
+  const [commentsList, setCommentsList] = useState<any[]>([]);
+  const [newComment, setNewComment] = useState("");
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [submittingComment, setSubmittingComment] = useState(false);
+  const [likesLoading, setLikesLoading] = useState(false);
+
+  // Fetch Likes & Comments for the active selected video
+  const fetchActiveVideoLikesAndComments = async (videoId: string | number) => {
+    if (!videoId) return;
+    try {
+      // 1. Fetch likes count
+      const likesRes = await fetch(`/api/likes?video_id=${videoId}`);
+      if (likesRes.ok) {
+        const likesData = await likesRes.json();
+        setLikesCount(likesData.count);
+      }
+
+      // 2. Fetch liked status if user is logged in
+      if (currentUser) {
+        const statusRes = await fetch(`/api/likes/status?video_id=${videoId}&user_id=${currentUser.id}`);
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          setUserLiked(statusData.liked);
+        } else {
+          setUserLiked(false);
+        }
+      } else {
+        setUserLiked(false);
+      }
+
+      // 3. Fetch Comments
+      const commentsRes = await fetch(`/api/comments?video_id=${videoId}`);
+      if (commentsRes.ok) {
+        const commentsData = await commentsRes.json();
+        setCommentsList(commentsData);
+      }
+    } catch (err) {
+      console.error("Error loading video likes/comments:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedVideo) {
+      fetchActiveVideoLikesAndComments(selectedVideo.id);
+    }
+  }, [selectedVideo, currentUser]);
+
+  const handleToggleLike = async () => {
+    if (!selectedVideo) return;
+    if (!currentUser) {
+      setAuthTab("login");
+      setIsAuthOpen(true);
+      return;
+    }
+
+    setLikesLoading(true);
+    try {
+      const res = await fetch("/api/likes/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: selectedVideo.id, user_id: currentUser.id })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUserLiked(data.liked);
+        setLikesCount(data.count);
+      }
+    } catch (err) {
+      console.error("Error toggling like:", err);
+    } finally {
+      setLikesLoading(false);
+    }
+  };
+
+  const handleSubmitComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedVideo || !currentUser || !newComment.trim()) return;
+
+    setSubmittingComment(true);
+    try {
+      const res = await fetch("/api/comments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          video_id: selectedVideo.id,
+          user_id: currentUser.id,
+          comment_text: newComment
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setCommentsList(prev => [data.comment, ...prev]);
+        setNewComment("");
+      }
+    } catch (err) {
+      console.error("Error posting comment:", err);
+    } finally {
+      setSubmittingComment(false);
+    }
+  };
+
   // Authentication Fields
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
@@ -1277,9 +1382,17 @@ export default function App() {
 
                       {/* User interaction counts (Likes, share, etc) */}
                       <div className="flex items-center gap-2">
-                        <button className="flex items-center gap-1.5 bg-[#272727] hover:bg-[#3f3f3f] px-3.5 py-1.5 rounded-full text-xs font-semibold hover:text-red-500 transition-colors">
-                          <ThumbsUp className="w-4 h-4" />
-                          <span>{getSimulatedLikes(selectedVideo.id)}</span>
+                        <button
+                          onClick={handleToggleLike}
+                          disabled={likesLoading}
+                          className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                            userLiked
+                              ? "bg-red-650 text-white hover:bg-red-700 font-extrabold"
+                              : "bg-[#272727] hover:bg-[#3f3f3f] text-zinc-200 hover:text-red-500"
+                          }`}
+                        >
+                          <ThumbsUp className={`w-4 h-4 ${userLiked ? "fill-white" : ""}`} />
+                          <span>{likesCount}</span>
                         </button>
                         <button className="flex items-center gap-1.5 bg-[#272727] hover:bg-[#3f3f3f] px-3.5 py-1.5 rounded-full text-xs font-semibold hover:text-red-500 transition-colors">
                           <Share2 className="w-4 h-4" />
@@ -1310,6 +1423,101 @@ export default function App() {
                         </p>
                       </div>
 
+                    </div>
+
+                    {/* Real comments section */}
+                    <div className="mt-8 pt-6 border-t border-[#212121]">
+                      <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-1.5 font-sans">
+                        <span>Комментарии</span>
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">
+                          {commentsList.length}
+                        </span>
+                      </h3>
+
+                      {/* Comment Input form */}
+                      {currentUser ? (
+                        <form onSubmit={handleSubmitComment} className="flex gap-3 items-start mb-6">
+                          <div className="shrink-0 mt-0.5">
+                            <div className={`w-8 h-8 rounded-full bg-gradient-to-tr ${getUserColors(currentUser.username)} flex items-center justify-center text-xs text-white font-bold font-mono`}>
+                              {currentUser.username.substring(0, 2).toUpperCase()}
+                            </div>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <textarea
+                              value={newComment}
+                              onChange={(e) => setNewComment(e.target.value)}
+                              placeholder="Оставьте публичный комментарий..."
+                              className="w-full bg-[#121214] border border-[#232328] focus:border-red-500 rounded-lg p-2.5 text-xs text-white placeholder-zinc-500 focus:outline-none resize-none h-18 transition-all font-sans"
+                            />
+                            <div className="flex justify-end mt-2">
+                              <button
+                                type="submit"
+                                disabled={submittingComment || !newComment.trim()}
+                                className="bg-red-650 hover:bg-red-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50 disabled:hover:bg-red-600 transition-colors cursor-pointer"
+                              >
+                                {submittingComment ? "Отправка..." : "Опубликовать"}
+                              </button>
+                            </div>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="bg-[#121214] rounded-lg p-4 border border-[#232328] text-center mb-6">
+                          <p className="text-xs text-zinc-400">
+                            Хотите оставить отзыв?{" "}
+                            <button
+                              onClick={() => {
+                                setAuthTab("login");
+                                setIsAuthOpen(true);
+                              }}
+                              className="text-red-500 font-semibold hover:underline bg-transparent border-none p-0 inline cursor-pointer font-sans"
+                            >
+                              Войдите
+                            </button>{" "}
+                            или{" "}
+                            <button
+                              onClick={() => {
+                                setAuthTab("register");
+                                setIsAuthOpen(true);
+                              }}
+                              className="text-red-500 font-semibold hover:underline bg-transparent border-none p-0 inline cursor-pointer font-sans"
+                            >
+                              зарегистрируйтесь
+                            </button>
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Comments Feed List */}
+                      <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
+                        {commentsList.map((comm) => (
+                          <div key={comm.id || Math.random()} className="flex items-start gap-2.5 pb-3.5 border-b border-[#1b1b1e]/40">
+                            <div className="shrink-0 mt-0.5">
+                              <div className={`w-7 h-7 rounded-full bg-gradient-to-tr ${getUserColors(comm.author_name || "аноним")} flex items-center justify-center text-[10px] text-white font-bold font-mono`}>
+                                {(comm.author_name || "АН").substring(0, 2).toUpperCase()}
+                              </div>
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-baseline gap-2">
+                                <span className="text-xs font-bold text-white">
+                                  {comm.author_name || "Пользователь"}
+                                </span>
+                                <span className="text-[10px] text-zinc-500">
+                                  {getSimulatedDaysAgo(comm.id || 1, comm.created_at || new Date().toISOString())}
+                                </span>
+                              </div>
+                              <p className="text-xs text-zinc-300 leading-normal mt-1 whitespace-pre-line font-sans">
+                                {comm.comment_text}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+
+                        {commentsList.length === 0 && (
+                          <p className="text-xs text-center text-zinc-500 py-4 font-sans">
+                            Будьте первым, кто оставит комментарий к этой записи!
+                          </p>
+                        )}
+                      </div>
                     </div>
 
                   </div>

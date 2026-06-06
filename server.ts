@@ -3,13 +3,14 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import multer from "multer";
-import sqlite3 from "sqlite3";
 import pg from "pg";
 import { exec } from "child_process";
 import { createServer as createViteServer } from "vite";
 
-// Ensure upload directories exist (for local sandbox caching)
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+// Ensure upload directories exist (for local sandbox caching and serverless support)
+const UPLOADS_DIR = process.env.VERCEL
+  ? "/tmp/uploads"
+  : path.join(process.cwd(), "uploads");
 const VIDEOS_DIR = path.join(UPLOADS_DIR, "videos");
 const THUMBNAILS_DIR = path.join(UPLOADS_DIR, "thumbnails");
 
@@ -17,10 +18,10 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(VIDEOS_DIR)) fs.mkdirSync(VIDEOS_DIR, { recursive: true });
 if (!fs.existsSync(THUMBNAILS_DIR)) fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
 
-// --- DUAL DATABASE STRATEGY (PostgreSQL & SQLite with Vercel Write Fallback) ---
+// --- PURE-JAVASCRIPT REGEX-DRIVEN DATABASE STRATEGY (PostgreSQL with Pure-JS Offline JSON Fallback) ---
+// Bypasses compiled SQLite3 binaries to eliminate GLIBC version mismatch crashes.
 const hasPostgres = !!(process.env.POSTGRES_URL || process.env.DATABASE_URL);
 let pgPool: pg.Pool | null = null;
-let sqliteDb: sqlite3.Database | null = null;
 
 if (hasPostgres) {
   const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL;
@@ -30,12 +31,55 @@ if (hasPostgres) {
   });
   console.log("Database Engine initialized: PostgreSQL [Active for Vercel/Cloud]");
 } else {
-  // On Vercel, the main workspace directory is read-only, so we fallback to /tmp/database.db
-  const DB_PATH = process.env.VERCEL ? "/tmp/database.db" : path.join(process.cwd(), "database.db");
-  sqliteDb = new sqlite3.Database(DB_PATH, (err) => {
-    if (err) console.error("Error opening offline SQLite database:", err.message);
-    else console.log("Database Engine initialized: SQLite [Fallback Local Container Mode] at", DB_PATH);
-  });
+  console.log("Database Engine initialized: Pure-JS JSON-File Database [Fallback Local Active]");
+}
+
+// Pure JSON Database Schema structures
+interface DbSchema {
+  users: any[];
+  videos: any[];
+  likes: any[];
+  comments: any[];
+}
+
+const JSON_DB_PATH = process.env.VERCEL
+  ? "/tmp/database.json"
+  : path.join(process.cwd(), "database.json");
+
+function readJsonDb(): DbSchema {
+  try {
+    if (!fs.existsSync(JSON_DB_PATH)) {
+      const parentSeed = path.join(process.cwd(), "database.json");
+      if (process.env.VERCEL && fs.existsSync(parentSeed)) {
+        try {
+          fs.copyFileSync(parentSeed, JSON_DB_PATH);
+          console.log("Successfully seeded serverless DB from pre-packaged JSON db.");
+        } catch (copyErr) {
+          console.warn("Could not copy pre-packaged seeds, initializing empty:", copyErr);
+          const initial: DbSchema = { users: [], videos: [], likes: [], comments: [] };
+          fs.writeFileSync(JSON_DB_PATH, JSON.stringify(initial, null, 2));
+          return initial;
+        }
+      } else {
+        const initial: DbSchema = { users: [], videos: [], likes: [], comments: [] };
+        fs.writeFileSync(JSON_DB_PATH, JSON.stringify(initial, null, 2));
+        return initial;
+      }
+    }
+    const data = fs.readFileSync(JSON_DB_PATH, "utf8");
+    return JSON.parse(data || "{}") as DbSchema;
+  } catch (err) {
+    console.warn("Error reading json database, using empty state:", err);
+    return { users: [], videos: [], likes: [], comments: [] };
+  }
+}
+
+function writeJsonDb(data: DbSchema) {
+  try {
+    fs.writeFileSync(JSON_DB_PATH, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error("Error writing json database:", err);
+  }
 }
 
 // Unified Query Execution Interface
@@ -56,15 +100,87 @@ async function queryRun(sql: string, params: any[] = []): Promise<{ id: number; 
       id: lastRow ? lastRow.id : 0,
       changes: res.rowCount ?? 0,
     };
-  } else if (sqliteDb) {
-    return new Promise((resolve, reject) => {
-      sqliteDb!.run(sql, params, function (this: any, err) {
-        if (err) reject(err);
-        else resolve({ id: this.lastID, changes: this.changes });
+  } else {
+    const db = readJsonDb();
+    const cleanSql = sql.replace(/\s+/g, " ").trim();
+    
+    if (cleanSql.includes("INSERT INTO users")) {
+      // INSERT INTO users (username, password_hash) VALUES (?, ?)
+      const id = db.users.length > 0 ? Math.max(...db.users.map(u => u.id)) + 1 : 1;
+      db.users.push({
+        id,
+        username: params[0],
+        password_hash: params[1],
+        created_at: new Date().toISOString()
       });
-    });
+      writeJsonDb(db);
+      return { id, changes: 1 };
+    }
+    
+    if (cleanSql.includes("INSERT INTO videos")) {
+      // INSERT INTO videos (title, description, video_filename, thumbnail_filename, user_id) VALUES (?, ?, ?, ?, ?)
+      // OR INSERT INTO videos (title, description, video_url, thumbnail_url, user_id) VALUES (?, ?, ?, ?, ?)
+      const id = db.videos.length > 0 ? Math.max(...db.videos.map(v => v.id)) + 1 : 1;
+      const isUrlUpload = cleanSql.includes("video_url");
+      
+      const newVideo: any = {
+        id,
+        title: params[0],
+        description: params[1],
+        uploaded_at: new Date().toISOString(),
+        user_id: params[4] || null,
+      };
+      
+      if (isUrlUpload) {
+        newVideo.video_url = params[2];
+        newVideo.thumbnail_url = params[3];
+      } else {
+        newVideo.video_filename = params[2];
+        newVideo.thumbnail_filename = params[3];
+      }
+      
+      db.videos.push(newVideo);
+      writeJsonDb(db);
+      return { id, changes: 1 };
+    }
+
+    if (cleanSql.includes("INSERT INTO likes")) {
+      // INSERT INTO likes (user_id, video_id) VALUES (?, ?)
+      const exists = db.likes.some(l => l.user_id === params[0] && String(l.video_id) === String(params[1]));
+      if (!exists) {
+        const id = db.likes.length > 0 ? Math.max(...db.likes.map(l => l.id)) + 1 : 1;
+        db.likes.push({ id, user_id: params[0], video_id: String(params[1]) });
+        writeJsonDb(db);
+        return { id, changes: 1 };
+      }
+      return { id: 0, changes: 0 };
+    }
+
+    if (cleanSql.includes("DELETE FROM likes")) {
+      // DELETE FROM likes WHERE user_id = ? AND video_id = ?
+      const initialCount = db.likes.length;
+      db.likes = db.likes.filter(l => !(l.user_id === params[0] && String(l.video_id) === String(params[1])));
+      const changes = initialCount - db.likes.length;
+      writeJsonDb(db);
+      return { id: 0, changes };
+    }
+
+    if (cleanSql.includes("INSERT INTO comments")) {
+      // INSERT INTO comments (user_id, video_id, comment_text) VALUES (?, ?, ?)
+      const id = db.comments.length > 0 ? Math.max(...db.comments.map(c => c.id)) + 1 : 1;
+      db.comments.push({
+        id,
+        user_id: params[0],
+        video_id: String(params[1]),
+        comment_text: params[2],
+        created_at: new Date().toISOString()
+      });
+      writeJsonDb(db);
+      return { id, changes: 1 };
+    }
+
+    return { id: 0, changes: 0 };
   }
-  throw new Error("No database active");
 }
 
 async function queryAll(sql: string, params: any[] = []): Promise<any[]> {
@@ -74,15 +190,45 @@ async function queryAll(sql: string, params: any[] = []): Promise<any[]> {
     finalSql = finalSql.replace(/\?/g, () => `$${paramIndex++}`);
     const res = await pgPool.query(finalSql, params);
     return res.rows;
-  } else if (sqliteDb) {
-    return new Promise((resolve, reject) => {
-      sqliteDb!.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
+  } else {
+    const db = readJsonDb();
+    const cleanSql = sql.replace(/\s+/g, " ").trim();
+    
+    if (cleanSql.includes("FROM videos")) {
+      return db.videos.map(v => {
+        const user = db.users.find(u => u.id === v.user_id);
+        return {
+          ...v,
+          author_name: user ? user.username : "Пользователь"
+        };
+      }).sort((a, b) => new Date(b.uploaded_at).getTime() - new Date(a.uploaded_at).getTime());
+    }
+
+    if (cleanSql.includes("FROM comments")) {
+      const videoIdInput = String(params[0]);
+      return db.comments
+        .filter(c => String(c.video_id) === videoIdInput)
+        .map(c => {
+          const user = db.users.find(u => u.id === c.user_id);
+          return {
+            ...c,
+            author_name: user ? user.username : "Пользователь"
+          };
+        })
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    }
+
+    if (cleanSql.includes("FROM likes")) {
+      if (cleanSql.includes("user_id = ? AND video_id = ?")) {
+        return db.likes.filter(l => l.user_id === params[0] && String(l.video_id) === String(params[1]));
+      }
+      if (cleanSql.includes("video_id = ?")) {
+        return db.likes.filter(l => String(l.video_id) === String(params[0]));
+      }
+    }
+
+    return [];
   }
-  return [];
 }
 
 async function queryGet(sql: string, params: any[] = []): Promise<any> {
@@ -92,15 +238,23 @@ async function queryGet(sql: string, params: any[] = []): Promise<any> {
     finalSql = finalSql.replace(/\?/g, () => `$${paramIndex++}`);
     const res = await pgPool.query(finalSql, params);
     return res.rows[0] || null;
-  } else if (sqliteDb) {
-    return new Promise((resolve, reject) => {
-      sqliteDb!.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
+  } else {
+    const db = readJsonDb();
+    const cleanSql = sql.replace(/\s+/g, " ").trim();
+
+    if (cleanSql.includes("FROM users WHERE username = ?")) {
+      const user = db.users.find(u => u.username.toLowerCase() === String(params[0]).toLowerCase());
+      return user || null;
+    }
+
+    if (cleanSql.includes("FROM likes")) {
+      if (cleanSql.includes("user_id = ? AND video_id = ?")) {
+        return db.likes.find(l => l.user_id === params[0] && String(l.video_id) === String(params[1])) || null;
+      }
+    }
+
+    return null;
   }
-  return null;
 }
 
 // Bootstrap table schemas
@@ -125,35 +279,38 @@ async function initDatabase() {
         video_url TEXT,
         thumbnail_url TEXT,
         uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        user_id INTEGER REFERENCES users(id)
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS likes (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        video_id VARCHAR(255) NOT NULL,
+        UNIQUE(user_id, video_id)
+      )
+    `);
+
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS comments (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        video_id VARCHAR(255) NOT NULL,
+        comment_text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     console.log("PostgreSQL Database initialized successfully matching serverless spec.");
   } else {
-    await queryRun(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await queryRun(`
-      CREATE TABLE IF NOT EXISTS videos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        description TEXT,
-        video_filename TEXT,
-        thumbnail_filename TEXT,
-        video_url TEXT,
-        thumbnail_url TEXT,
-        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        user_id INTEGER,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-      )
-    `);
-    console.log("SQLite Engine tables successfully initialized in database.");
+    // Pure JS JSON database initialization
+    const db = readJsonDb();
+    if (!db.users) db.users = [];
+    if (!db.videos) db.videos = [];
+    if (!db.likes) db.likes = [];
+    if (!db.comments) db.comments = [];
+    writeJsonDb(db);
+    console.log("Pure-JS JSON Database successfully initialized.");
   }
 }
 
@@ -343,6 +500,110 @@ app.post("/api/auth/login", async (req, res) => {
   } catch (err: any) {
     console.error("Login error:", err);
     return res.status(500).json({ error: "Внутренняя ошибка при входе" });
+  }
+});
+
+// --- LIKES & COMMENTS API ENDPOINTS ---
+
+// GET /api/likes - Get likes count
+app.get("/api/likes", async (req, res) => {
+  try {
+    const { video_id } = req.query;
+    if (!video_id) return res.status(400).json({ error: "Missing video_id parameter" });
+    const countRes = await queryAll("SELECT * FROM likes WHERE video_id = ?", [String(video_id)]);
+    return res.json({ count: countRes.length });
+  } catch (err: any) {
+    console.error("Error getting likes count:", err);
+    return res.status(500).json({ error: "Ошибка при получении лайков." });
+  }
+});
+
+// GET /api/likes/status - Check if user liked video
+app.get("/api/likes/status", async (req, res) => {
+  try {
+    const { video_id, user_id } = req.query;
+    if (!video_id || !user_id) return res.json({ liked: false });
+    const result = await queryGet("SELECT * FROM likes WHERE user_id = ? AND video_id = ?", [parseInt(String(user_id), 10), String(video_id)]);
+    return res.json({ liked: !!result });
+  } catch (err: any) {
+    console.error("Error getting like status:", err);
+    return res.json({ liked: false });
+  }
+});
+
+// POST /api/likes/toggle - Toggle a like
+app.post("/api/likes/toggle", async (req, res) => {
+  try {
+    const { video_id, user_id } = req.body;
+    if (!video_id || !user_id) return res.status(400).json({ error: "Укажите video_id и user_id." });
+    const uid = parseInt(String(user_id), 10);
+    const vid = String(video_id);
+
+    const existing = await queryGet("SELECT * FROM likes WHERE user_id = ? AND video_id = ?", [uid, vid]);
+    let liked = false;
+    if (existing) {
+      await queryRun("DELETE FROM likes WHERE user_id = ? AND video_id = ?", [uid, vid]);
+      liked = false;
+    } else {
+      await queryRun("INSERT INTO likes (user_id, video_id) VALUES (?, ?)", [uid, vid]);
+      liked = true;
+    }
+    const countRes = await queryAll("SELECT * FROM likes WHERE video_id = ?", [vid]);
+    return res.json({ liked, count: countRes.length });
+  } catch (err: any) {
+    console.error("Error toggling like:", err);
+    return res.status(500).json({ error: "Не удалось переключить лайк." });
+  }
+});
+
+// GET /api/comments - Get comments for a video
+app.get("/api/comments", async (req, res) => {
+  try {
+    const { video_id } = req.query;
+    if (!video_id) return res.status(400).json({ error: "Missing video_id parameter" });
+    const commentsList = await queryAll(
+      "SELECT comments.*, users.username as author_name FROM comments LEFT JOIN users ON comments.user_id = users.id WHERE video_id = ? ORDER BY created_at DESC",
+      [String(video_id)]
+    );
+    return res.json(commentsList);
+  } catch (err: any) {
+    console.error("Error loading comments:", err);
+    return res.status(500).json({ error: "Не удалось загрузить комментарии." });
+  }
+});
+
+// POST /api/comments - Add a comment
+app.post("/api/comments", async (req, res) => {
+  try {
+    const { video_id, user_id, comment_text } = req.body;
+    if (!video_id || !user_id || !comment_text || !comment_text.trim()) {
+      return res.status(400).json({ error: "Заполните все необходимые поля для комментария." });
+    }
+    const uid = parseInt(String(user_id), 10);
+    const vid = String(video_id);
+    const text = comment_text.trim();
+
+    const userObj = await queryGet("SELECT username FROM users WHERE id = ?", [uid]);
+    if (!userObj) {
+      return res.status(403).json({ error: "Пользователь не найден." });
+    }
+
+    const runResult = await queryRun("INSERT INTO comments (user_id, video_id, comment_text) VALUES (?, ?, ?)", [uid, vid, text]);
+    
+    return res.json({
+      success: true,
+      comment: {
+        id: runResult.id || Math.floor(Math.random() * 100000),
+        user_id: uid,
+        video_id: vid,
+        comment_text: text,
+        created_at: new Date().toISOString(),
+        author_name: userObj.username
+      }
+    });
+  } catch (err: any) {
+    console.error("Error creating comment:", err);
+    return res.status(500).json({ error: "Не удалось добавить комментарий." });
   }
 });
 
